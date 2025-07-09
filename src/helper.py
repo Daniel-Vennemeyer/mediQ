@@ -48,7 +48,11 @@ class ModelCache:
         if not self.use_vllm and self.use_api != "openai":
             from transformers import AutoModelForCausalLM, AutoTokenizer
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-            self.model = AutoModelForCausalLM.from_pretrained(self.model_name)
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                device_map="auto",
+                torch_dtype=torch.float16
+            )
             self.model.eval()  # Set the model to evaluation mode
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
@@ -62,9 +66,10 @@ class ModelCache:
         self.top_p = self.args.get("top_p", 0.9)
         self.top_logprobs = self.args.get("top_logprobs", 0)
 
-        if self.use_api == "openai": self.openai_generate(messages)
-        elif self.use_vllm: return self.vllm_generate(messages)
-        else: return self.huggingface_generate(messages)
+        # if self.use_api == "openai": self.openai_generate(messages)
+        # elif self.use_vllm: return self.vllm_generate(messages)
+        # else: 
+        return self.huggingface_generate(messages)
     
     def huggingface_generate(self, messages):
         try:

@@ -1,6 +1,10 @@
 import prompts
 import expert_basics
 import logging
+import logging
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
 PROB_THRESHOLD = 0.8
 SCALE_THRESHOLD = 4.0
@@ -11,7 +15,7 @@ def answer_to_idx(answer):
 def log_info(message, logger="detail_logger", print_to_std=False):
     if type(logger) == str and logger in logging.getLogger().manager.loggerDict:
         logger = logging.getLogger(logger)
-    if logger: logger.info(message)
+    # if logger: logger.info(message)
     if print_to_std: print(message + "\n")
 
 

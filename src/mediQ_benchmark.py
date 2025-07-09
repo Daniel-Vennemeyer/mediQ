@@ -5,6 +5,7 @@ import logging
 from args import get_args
 from patient import Patient
 import importlib
+import inspect
 
 def setup_logger(name, file):
     if not file: return None
@@ -61,7 +62,7 @@ def main():
             continue
 
         log_info(f"|||||||||||||||||||| PATIENT #{pid} ||||||||||||||||||||")
-        letter_choice, questions, answers, temp_choice_list, temp_additional_info, sample_info = run_patient_interaction(expert_class, patient_class, sample)
+        letter_choice, questions, answers, temp_choice_list, temp_additional_info, sample_info, ig_metrics = run_patient_interaction(expert_class, patient_class, sample)
         log_info(f"|||||||||||||||||||| Interaction ended for patient #{pid} ||||||||||||||||||||\n\n\n")
 
         output_dict = {
@@ -76,15 +77,7 @@ def main():
                 "temp_additional_info": temp_additional_info
             },
             "info": sample_info,
-            # TODO: add additional evaluation metrics for analysis, some metrics can be found in src/evaluate.py
-            # "eval": {
-            #     "confidence_scores": [],
-            #     "repeat_question_score": [],
-            #     "repeat_answer_score": [],
-            #     "relevancy_score": [],
-            #     "delta_confidence_score": [],
-            #     "specificity_score": []
-            # }
+            "ig_metrics": ig_metrics
         }
 
         # create the directory if it does not exist
@@ -105,7 +98,19 @@ def main():
     print(f"Accuracy: {sum(correct_history)} / {len(correct_history)} = {accuracy}")
     print(f"Timeout Rate: {sum(timeout_history)} / {len(timeout_history)} = {timeout_rate}")
     print(f"Avg. Turns: {avg_turns}")
-    
+
+    # Save IG log if the expert supports it
+    if hasattr(expert_class, 'save_ig_log'):
+        # We need an actual instance of the expert, so reinstantiate with dummy args
+        sample_pid = next(iter(patient_data))
+        sample_data = patient_data[sample_pid]
+        dummy_expert = expert_class(args, sample_data["question"], sample_data["options"])
+        if hasattr(dummy_expert, 'ig_log') and isinstance(dummy_expert.ig_log, list):
+            dummy_expert.ig_log = []
+            for pid, sample in patient_data.items():
+                temp_expert = expert_class(args, sample["question"], sample["options"])
+                if hasattr(temp_expert, 'ig_log') and isinstance(temp_expert.ig_log, list):
+                    temp_expert.save_ig_log(f"ig_vs_accuracy_{pid}.jsonl")
 
 def run_patient_interaction(expert_class, patient_class, sample):
     expert_system = expert_class(args, sample["question"], sample["options"])
@@ -117,7 +122,8 @@ def run_patient_interaction(expert_class, patient_class, sample):
         log_info(f"==================== Turn {len(patient_system.get_questions()) + 1} ====================")
         patient_state = patient_system.get_state()
         response_dict = expert_system.respond(patient_state)
-        log_info(f"[Expert System]: {response_dict}")
+        current_ig_metrics = response_dict.get("ig_metrics", {})
+        # log_info(f"[Expert System]: {response_dict}")
         
         # Optional return values for analysis, e.g., confidence score, logprobs
         temp_additional_info.append({k: v for k, v in response_dict.items() if k not in ["type", "letter_choice", "question"]})
@@ -127,7 +133,7 @@ def run_patient_interaction(expert_class, patient_class, sample):
             temp_choice_list.append(response_dict["letter_choice"])
             # Patient generates an answer based on the last question asked, and add to memory
             patient_response = patient_system.respond(response_dict["question"])
-            log_info(f"[Patient System]: {patient_response}")
+            # log_info(f"[Patient System]: {patient_response}")
 
         elif response_dict["type"] == "choice":
             expert_decision = response_dict["letter_choice"]
@@ -141,16 +147,17 @@ def run_patient_interaction(expert_class, patient_class, sample):
                 "context": sample["context"],
                 "facts": patient_system.facts, # if the FactSelectPatient patient module is used, this will store the atomic facts the patient used to answer questions for reproducibility
             }
-            return expert_decision, patient_system.get_questions(), patient_system.get_answers(), temp_choice_list, temp_additional_info, sample_info
+            return expert_decision, patient_system.get_questions(), patient_system.get_answers(), temp_choice_list, temp_additional_info, sample_info, current_ig_metrics
         
         else:
             raise ValueError("Invalid response type from expert_system.")
     
     # If max questions are reached and no final decision has been made
-    log_info(f"==================== Max Interaction Length ({args.max_questions} turns) Reached --> Force Final Answer ====================")
+    # log_info(f"==================== Max Interaction Length ({args.max_questions} turns) Reached --> Force Final Answer ====================")
     patient_state = patient_system.get_state()
     response_dict = expert_system.respond(patient_state)
-    log_info(f"[Expert System]: {response_dict}")
+    current_ig_metrics = response_dict.get("ig_metrics", {})
+    # log_info(f"[Expert System]: {response_dict}")
     stuck_response = response_dict["letter_choice"]
     # Optional return values for analysis, e.g., confidence score, logprobs
     temp_additional_info.append({k: v for k, v in response_dict.items() if k != "letter_choice"})
@@ -165,7 +172,7 @@ def run_patient_interaction(expert_class, patient_class, sample):
         "facts": patient_system.facts, # if the FactSelectPatient patient module is used, this will store the atomic facts the patient used to answer questions for reproducibility
     }
     
-    return stuck_response, patient_system.get_questions(), patient_system.get_answers(), temp_choice_list + [stuck_response], temp_additional_info, sample_info
+    return stuck_response, patient_system.get_questions(), patient_system.get_answers(), temp_choice_list + [stuck_response], temp_additional_info, sample_info, current_ig_metrics
 
 
 if __name__ == "__main__":
