@@ -286,6 +286,11 @@ class InfoGainExpert(Expert):
             torch_dtype=torch.float16,
             low_cpu_mem_usage=True
         )
+        # Determine device for embedding model
+        if torch.cuda.is_available():
+            self.device = 'cuda'
+        else:
+            self.device = 'cpu'
         self.ig_log = []
         self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device=self.device)
         
