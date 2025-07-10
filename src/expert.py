@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import BitsAndBytesConfig
 import random
 import expert_functions
 import logging
@@ -280,11 +281,16 @@ class InfoGainExpert(Expert):
     def __init__(self, args, inquiry, options):
         super().__init__(args, inquiry, options)
         self.tokenizer = AutoTokenizer.from_pretrained(args.expert_model)
+        bnb_config = BitsAndBytesConfig(
+            load_in_8bit=True,
+            llm_int8_threshold=6.0,
+            llm_int8_has_fp16_weight=False
+        )
         self.model = AutoModelForCausalLM.from_pretrained(
             args.expert_model,
             device_map="auto",
-            torch_dtype=torch.float16,
-            low_cpu_mem_usage=True
+            quantization_config=bnb_config,
+            torch_dtype=torch.float16
         )
         # Determine device for embedding model
         if torch.cuda.is_available():
