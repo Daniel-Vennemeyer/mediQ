@@ -7,6 +7,9 @@ import expert_functions
 import logging
 from sentence_transformers import SentenceTransformer
 
+import re
+import numpy as np
+
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -550,3 +553,148 @@ class InfoGainExpert(Expert):
             for entry in self.ig_log:
                 json.dump(entry, f)
                 f.write("\n")
+
+
+# LLMJudgeExpert: LLM-based multidimensional question rater
+class LLMJudgeExpert(Expert):
+    _model = None
+    _tokenizer = None
+    _embedding_model = None
+
+    def __init__(self, args, inquiry, options, scale=5):
+        super().__init__(args, inquiry, options)
+        self.scale = scale
+        # reuse tokenizer/model caching logic
+        if LLMJudgeExpert._tokenizer is None:
+            LLMJudgeExpert._tokenizer = AutoTokenizer.from_pretrained(args.expert_model)
+        self.tokenizer = LLMJudgeExpert._tokenizer
+
+        if LLMJudgeExpert._model is None:
+            bnb_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_threshold=6.0,
+                llm_int8_has_fp16_weight=False
+            )
+            LLMJudgeExpert._model = AutoModelForCausalLM.from_pretrained(
+                args.expert_model,
+                device_map="auto",
+                quantization_config=bnb_config,
+                torch_dtype=torch.float16
+            )
+        self.model = LLMJudgeExpert._model
+
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        if LLMJudgeExpert._embedding_model is None:
+            LLMJudgeExpert._embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device=self.device)
+        self.embedding_model = LLMJudgeExpert._embedding_model
+
+    def rate_question_multidimensional(self, context, question, scale=None, concept=None):
+        if scale is None:
+            scale = self.scale
+
+        def ask_single_metric(metric_name, prompt_detail, scale):
+            prompt = (
+                f"You are evaluating a question asked during a game where the goal is to guess a hidden concept. "
+                f"For the given context and question, rate the question on a scale from 1 to {scale} for the following aspect:\n\n"
+                f"{prompt_detail}\n\n"
+                f"Context:\n{context.strip()}\n\n"
+                f"Question-Answer: \"{question}\"\n\n"
+                f"ONLY respond with a single number from 1 to {scale}. Answer: "
+            )
+            inputs = self.tokenizer(prompt, return_tensors="pt").to(self.device)
+            with torch.no_grad():
+                output = self.model.generate(
+                    **inputs,
+                    max_new_tokens=5,
+                    eos_token_id=self.tokenizer.eos_token_id
+                )
+            decoded = self.tokenizer.decode(output[0], skip_special_tokens=True).strip()
+            try:
+                match = [int(n) for n in re.findall(r'\b\d+\b', decoded)]
+                if match:
+                    return max(1, min(scale, match[-1]))
+            except Exception:
+                pass
+            return -1
+
+        informativeness = ask_single_metric(
+            "informativeness",
+            "Informativeness: To what extent does the question reduce uncertainty about the task-relevant latent variable?",
+            scale
+        )
+        relevance = ask_single_metric(
+            "relevance",
+            "Relevance: Is the question appropriate and grounded in the current context or conversation state?",
+            scale
+        )
+        answerability = ask_single_metric(
+            "answerability",
+            "Answerability: Is the question well-formed such that an answer can be generated or obtained reliably?",
+            scale
+        )
+        efficiency = ask_single_metric(
+            "efficiency",
+            "Efficiency: Does the question progress the agent toward task completion with minimal redundancy?",
+            scale
+        )
+
+        result = {
+            'llm_informativeness': informativeness,
+            'llm_relevance': relevance,
+            'llm_answerability': answerability,
+            'llm_efficiency': efficiency
+        }
+        valid_scores = [v for v in result.values() if v >= 0]
+        result['llm_score'] = np.mean(valid_scores) if valid_scores else -1
+        return result, None
+
+    def compute_metrics(self, context, prior, object, question, scale=None, multidimensional=False):
+        if multidimensional:
+            return self.rate_question_multidimensional(context, question, scale, object)
+        else:
+            return self.rate_question_informativeness(context, question, scale, object)
+
+    def rate_question_informativeness(self, context, question, scale=None, concept=None):
+        # Single-dimensional informativeness rating
+        if scale is None:
+            scale = self.scale
+        # reuse the ask_single_metric logic for informativeness only
+        result, _ = self.rate_question_multidimensional(context, question, scale, concept)
+        # extract only informativeness
+        return {'llm_informativeness': result['llm_informativeness']}, None
+
+    def respond(self, patient_state):
+        # Format the existing interaction history
+        context = "\n".join([f"Doctor: {q}\nPatient: {r}" for q, r in patient_state["interaction_history"]])
+        # Ask a follow-up question (or decide to choose), using fixed abstention
+        kwargs = self.get_abstain_kwargs(patient_state)
+        abstain_response = expert_functions.fixed_abstention_decision(**kwargs)
+        if not abstain_response["abstain"]:
+            return {
+                "type": "choice",
+                "letter_choice": abstain_response["letter_choice"],
+                "confidence": abstain_response["confidence"],
+                "usage": abstain_response["usage"]
+            }
+        # Otherwise ask a question
+        question_dict = self.ask_question(patient_state, abstain_response["messages"])
+        # Compute LLM-based metrics on this question
+        metrics, _ = self.compute_metrics(
+            context,
+            None,
+            patient_state.get("answer"),
+            question_dict["atomic_question"],
+            multidimensional=self.args.multidimensional_rating
+        )
+        # Package the response
+        abstain_response["usage"]["input_tokens"] += question_dict["usage"]["input_tokens"]
+        abstain_response["usage"]["output_tokens"] += question_dict["usage"]["output_tokens"]
+        return {
+            "type": "question",
+            "question": question_dict["atomic_question"],
+            "letter_choice": abstain_response["letter_choice"],
+            "confidence": abstain_response["confidence"],
+            "usage": abstain_response["usage"],
+            "llm_metrics": metrics
+        }
