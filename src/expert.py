@@ -685,7 +685,7 @@ class LLMJudgeExpert(Expert):
             None,
             patient_state.get("answer"),
             question_dict["atomic_question"],
-            multidimensional=self.args.multidimensional_rating
+            multidimensional=True
         )
         # Package the response
         abstain_response["usage"]["input_tokens"] += question_dict["usage"]["input_tokens"]
