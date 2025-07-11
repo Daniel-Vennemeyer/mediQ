@@ -62,12 +62,12 @@ def main(json_path):
         "euclidean", "entropy_after"
     ]):
         df["hybrid_score"] = (
-            +0.2 * df["kl"] +
-            +0.4 * df["wasserstein"] +
-            +0.4 * df["tv"] +
-            +0.2 * df["cosine"] +
-            +0.3 * df["euclidean"] +
-            +0.5 * df["entropy_after"]
+            +1.4377 * df["tv"] +
+            +0.6922 * df["gini_drop"] +
+            -1.1178 * df["margin_gain"]
+            # +0.2 * df["cosine"] +
+            # +0.3 * df["euclidean"] +
+            # +0.5 * df["entropy_after"]
         )
         spearman_corr, spearman_p = spearmanr(df["hybrid_score"], df["correct"])
         print(f"\nhybrid_score              Spearman ρ = {spearman_corr:.3f} (p={spearman_p:.3g})")
@@ -126,4 +126,4 @@ def main(json_path):
     df.to_csv(output_csv, index=False)
     print(f"\nResults saved to {output_csv}")
 
-main("output.jsonl")
+main("output/output.jsonl")
