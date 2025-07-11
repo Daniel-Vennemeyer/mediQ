@@ -233,6 +233,9 @@ class ScaleExpert(Expert):
             "usage": abstain_response_dict["usage"]
         }
 class InfoGainExpert(Expert):
+    _model = None
+    _tokenizer = None
+    _embedding_model = None
     def gini_impurity(self, dist):
         # Gini impurity: 1 - sum(p^2)
         return 1 - torch.sum(dist ** 2).item()
@@ -280,25 +283,36 @@ class InfoGainExpert(Expert):
         return kl(prior) - kl(post)
     def __init__(self, args, inquiry, options):
         super().__init__(args, inquiry, options)
-        self.tokenizer = AutoTokenizer.from_pretrained(args.expert_model)
-        bnb_config = BitsAndBytesConfig(
-            load_in_8bit=True,
-            llm_int8_threshold=6.0,
-            llm_int8_has_fp16_weight=False
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            args.expert_model,
-            device_map="auto",
-            quantization_config=bnb_config,
-            torch_dtype=torch.float16
-        )
-        # Determine device for embedding model
-        if torch.cuda.is_available():
-            self.device = 'cuda'
-        else:
-            self.device = 'cpu'
+        # tokenizer caching
+        if InfoGainExpert._tokenizer is None:
+            InfoGainExpert._tokenizer = AutoTokenizer.from_pretrained(args.expert_model)
+        self.tokenizer = InfoGainExpert._tokenizer
+
+        # 8-bit model caching
+        if InfoGainExpert._model is None:
+            bnb_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_threshold=6.0,
+                llm_int8_has_fp16_weight=False
+            )
+            InfoGainExpert._model = AutoModelForCausalLM.from_pretrained(
+                args.expert_model,
+                device_map="auto",
+                quantization_config=bnb_config,
+                torch_dtype=torch.float16
+            )
+        self.model = InfoGainExpert._model
+
+        # determine device
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+        # embedding model caching
+        if InfoGainExpert._embedding_model is None:
+            InfoGainExpert._embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device=self.device)
+        self.embedding_model = InfoGainExpert._embedding_model
+
+        # log storage
         self.ig_log = []
-        self.embedding_model = SentenceTransformer('all-MiniLM-L6-v2', device=self.device)
         
 
     def respond(self, patient_state):
